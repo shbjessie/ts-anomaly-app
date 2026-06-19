@@ -1,8 +1,9 @@
 """시계열 이상탐지 웹앱 (Streamlit).
 
-2단계: 견고한 로딩(자동 컬럼 인식·결측 처리·파일 가드) + 파일 해시 기반 캐싱
-        + 자동 EDA(기초통계·결측·상관) + 라벨 자동 감지.
-이후 단계에서 이상탐지 / 평가 대시보드 / 드릴다운을 추가한다.
+전체 파이프라인(1~7단계):
+견고한 로딩·해시 캐싱 → 자동 EDA → 다중 방법 이상탐지(forecast_norm/kmeans)
+→ 방법 비교·합집합/교집합 앙상블 → 라벨 유무별 평가 대시보드
+→ 드릴다운·변수 기여도·이상목록 CSV 다운로드.
 """
 from __future__ import annotations
 
@@ -31,7 +32,8 @@ SAMPLES = {
 st.title("📈 시계열 이상탐지 대시보드")
 st.caption(
     "다변량 시계열 CSV를 업로드하면 자동으로 분석합니다. "
-    "(로딩·캐싱 · 자동 EDA · 다중 방법 이상탐지 · 방법 비교/앙상블 · 라벨 유무별 평가 대시보드)"
+    "(로딩·캐싱 · 자동 EDA · 다중 방법 이상탐지 · 방법 비교/앙상블 · "
+    "라벨 유무별 평가 대시보드 · 드릴다운·변수 기여도·CSV 다운로드)"
 )
 
 
@@ -140,7 +142,7 @@ tab_data, tab_eda, tab_detect, tab_eval = st.tabs(
 
 with tab_data:
     st.markdown("##### 표 미리보기 (상위 100행)")
-    st.dataframe(bundle.df.head(100), use_container_width=True)
+    st.dataframe(bundle.df.head(100), width="stretch")
 
     st.markdown("##### 시계열 그래프")
     selected = st.multiselect(
@@ -150,7 +152,7 @@ with tab_data:
     )
     if selected:
         fig = viz.line_chart(bundle.df, bundle.time_col, selected)
-        st.plotly_chart(fig, use_container_width=True)
+        st.plotly_chart(fig, width="stretch")
     else:
         st.info("표시할 변수를 한 개 이상 선택하세요.")
 
@@ -158,7 +160,7 @@ with tab_eda:
     cols = bundle.numeric_cols
 
     st.markdown("##### 1) 기초 통계")
-    st.dataframe(eda.basic_stats(bundle.df, cols), use_container_width=True)
+    st.dataframe(eda.basic_stats(bundle.df, cols), width="stretch")
 
     st.markdown("##### 2) 결측치 현황 (원본 기준)")
     miss = eda.missing_summary(bundle.raw_df, cols)
@@ -167,16 +169,16 @@ with tab_eda:
     else:
         mcol1, mcol2 = st.columns([1, 1.4])
         with mcol1:
-            st.dataframe(miss, use_container_width=True)
+            st.dataframe(miss, width="stretch")
         with mcol2:
-            st.plotly_chart(viz.missing_bar(miss), use_container_width=True)
+            st.plotly_chart(viz.missing_bar(miss), width="stretch")
         st.caption("※ 분석용 데이터에서는 위 결측을 보간/채움으로 처리했습니다.")
 
     st.markdown("##### 3) 변수 간 상관관계")
     if len(cols) >= 2:
         st.plotly_chart(
             viz.correlation_heatmap(eda.correlation(bundle.df, cols)),
-            use_container_width=True,
+            width="stretch",
         )
     else:
         st.info("상관관계를 보려면 수치 변수가 2개 이상 필요합니다.")
@@ -242,7 +244,7 @@ with tab_detect:
         )
         st.plotly_chart(
             viz.score_overlay(result.scores, used, score_names, x=x_axis),
-            use_container_width=True,
+            width="stretch",
         )
 
         comp_rows = []
@@ -266,7 +268,7 @@ with tab_detect:
         with ccomp:
             st.dataframe(
                 pd.DataFrame(comp_rows).set_index("방법"),
-                use_container_width=True,
+                width="stretch",
             )
         with cagree:
             if len(used) == 2:
@@ -332,9 +334,79 @@ with tab_detect:
             score=score, flags=flags, threshold=thr,
             score_label=score_label,
         )
-        st.plotly_chart(fig, use_container_width=True)
+        st.plotly_chart(fig, width="stretch")
     else:
         st.info("표시할 변수를 한 개 이상 선택하세요.")
+
+    # ------------------ 6단계: 이상 목록 / CSV / 드릴다운 / 변수 기여도 ------------------ #
+    st.markdown("##### 📥 이상 목록 · 드릴다운 · 변수 기여도")
+    dev = detect.variable_deviation(bundle.df, bundle.numeric_cols)
+    flag_pos = flags[flags].index.tolist()
+
+    if not flag_pos:
+        st.info("현재 임계값/판정 방식에서 탐지된 이상이 없습니다. 임계값(분위수)을 낮춰 보세요.")
+    else:
+        # 기여도 1위 변수 (벡터화)
+        dev_flagged = dev.loc[flag_pos]
+        row_sums = dev_flagged.sum(axis=1)
+        share_df = (dev_flagged.div(row_sums.where(row_sums > 0), axis=0) * 100).fillna(0.0)
+
+        table = pd.DataFrame({"위치(row)": flag_pos})
+        if bundle.time_col:
+            table["시간"] = bundle.df[bundle.time_col].iloc[flag_pos].values
+        table["이상점수"] = score.iloc[flag_pos].round(4).values
+        table["기여 1위 변수"] = share_df.idxmax(axis=1).values
+        table["기여도(%)"] = share_df.max(axis=1).round(1).values
+        for c in bundle.numeric_cols:
+            table[c] = bundle.df[c].iloc[flag_pos].round(4).values
+
+        csv_bytes = table.to_csv(index=False).encode("utf-8-sig")
+        st.download_button(
+            "📥 이상 목록 CSV 다운로드",
+            data=csv_bytes,
+            file_name=f"anomalies_{content_hash}.csv",
+            mime="text/csv",
+        )
+        st.dataframe(table.head(500), width="stretch")
+        if len(table) > 500:
+            st.caption(f"표는 상위 500개만 표시(전체 {len(table):,}개는 CSV에 포함).")
+
+        st.markdown("###### 🔎 드릴다운 (이상 시점 확대 + 변수 기여도)")
+        dd1, dd2 = st.columns([1.4, 1])
+        with dd1:
+            def _fmt_pick(p):
+                t = bundle.df[bundle.time_col].iloc[p] if bundle.time_col else f"row {p}"
+                return f"{t}  ·  점수 {score.iloc[p]:.3f}"
+            pick = st.selectbox(
+                "이상 시점 선택", options=flag_pos, format_func=_fmt_pick, key="drill_pick",
+            )
+        with dd2:
+            window = st.slider("확대 창(±행)", 5, 100, 20, 5, key="drill_window")
+
+        dvars = st.multiselect(
+            "확대해서 볼 변수",
+            options=bundle.numeric_cols,
+            default=bundle.numeric_cols[: min(4, len(bundle.numeric_cols))],
+            key="drill_vars",
+        )
+        gd1, gd2 = st.columns([1.5, 1])
+        with gd1:
+            if dvars:
+                st.plotly_chart(
+                    viz.drilldown_chart(
+                        bundle.df, bundle.time_col, dvars, int(pick), int(window), flags,
+                    ),
+                    width="stretch",
+                )
+            else:
+                st.info("확대해서 볼 변수를 한 개 이상 선택하세요.")
+        with gd2:
+            contrib = detect.contribution_share(dev.loc[int(pick)])
+            st.plotly_chart(viz.contribution_bar(contrib), width="stretch")
+            st.caption(
+                "선택 시점에서 각 변수가 평소 분포(중앙값·IQR) 대비 "
+                "얼마나 벗어났는지의 비중입니다."
+            )
 
 # --------------------------------------------------------------------------- #
 # 평가 대시보드 탭 (라벨 유무로 분기 + 대화형 임계값 슬라이더)
@@ -410,19 +482,19 @@ with tab_eval:
             with gcol1:
                 fpr, tpr = met["roc"]
                 st.plotly_chart(viz.roc_curve_fig(fpr, tpr, met["roc_auc"]),
-                                use_container_width=True)
+                                width="stretch")
             with gcol2:
                 rec, prec = met["pr"]
                 st.plotly_chart(viz.pr_curve_fig(rec, prec, met["pr_auc"], met["baseline"]),
-                                use_container_width=True)
+                                width="stretch")
 
         dcol1, dcol2 = st.columns([1, 1.3])
         with dcol1:
-            st.plotly_chart(viz.confusion_fig(met["cm"]), use_container_width=True)
+            st.plotly_chart(viz.confusion_fig(met["cm"]), width="stretch")
         with dcol2:
             st.plotly_chart(
                 viz.score_distribution(eval_score, eval_thr, labels=y_true),
-                use_container_width=True,
+                width="stretch",
             )
         st.caption(
             "💡 임계값(분위수)을 낮추면 재현율↑·정밀도↓, 높이면 그 반대입니다. "
@@ -446,7 +518,7 @@ with tab_eval:
 
         st.plotly_chart(
             viz.score_distribution(eval_score, eval_thr, labels=None),
-            use_container_width=True,
+            width="stretch",
         )
         st.caption(
             "💡 빨간 선(임계값) 오른쪽이 '이상'으로 판정됩니다. "

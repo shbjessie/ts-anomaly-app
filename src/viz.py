@@ -286,6 +286,86 @@ def score_distribution(
     return fig
 
 
+def drilldown_chart(
+    df: pd.DataFrame,
+    time_col: str | None,
+    columns: list[str],
+    center: int,
+    window: int,
+    flags: pd.Series,
+) -> go.Figure:
+    """특정 이상 시점(center) 주변 [center±window] 구간을 변수별로 확대.
+
+    선택한 시점은 빨강 별(★), 같은 창 안의 다른 이상은 빨강 X로 표시한다.
+    """
+    n_all = len(df)
+    lo = max(0, center - window)
+    hi = min(n_all - 1, center + window)
+    sub = df.iloc[lo:hi + 1]
+    x = sub[time_col] if time_col else sub.index
+
+    sub_flags = flags.iloc[lo:hi + 1]
+    win_anom = [p for p in sub_flags[sub_flags].index if p != center]
+
+    n = len(columns)
+    fig = make_subplots(
+        rows=n, cols=1, shared_xaxes=True,
+        subplot_titles=columns, vertical_spacing=0.06,
+    )
+
+    def _xat(pos_list):
+        if time_col:
+            return df[time_col].loc[pos_list]
+        return pos_list
+
+    for i, col in enumerate(columns, start=1):
+        fig.add_trace(
+            go.Scatter(x=x, y=sub[col], mode="lines+markers",
+                       line=dict(width=1), marker=dict(size=4),
+                       name=col, showlegend=False),
+            row=i, col=1,
+        )
+        if win_anom:
+            fig.add_trace(
+                go.Scatter(x=_xat(win_anom), y=df[col].loc[win_anom],
+                           mode="markers", marker=dict(color="red", size=8, symbol="x"),
+                           name="이상", showlegend=False),
+                row=i, col=1,
+            )
+        # 선택한 중심 시점 강조 (별)
+        fig.add_trace(
+            go.Scatter(x=_xat([center]), y=df[col].loc[[center]],
+                       mode="markers",
+                       marker=dict(color="red", size=13, symbol="star",
+                                   line=dict(color="black", width=1)),
+                       name="선택 시점", showlegend=False),
+            row=i, col=1,
+        )
+
+    fig.update_layout(
+        height=max(280, 160 * n),
+        margin=dict(l=40, r=20, t=40, b=30),
+    )
+    return fig
+
+
+def contribution_bar(contrib: pd.Series) -> go.Figure:
+    """변수별 기여도(%) 가로 막대 (큰 순으로)."""
+    c = contrib.sort_values(ascending=True)
+    fig = go.Figure(go.Bar(
+        x=c.values, y=list(c.index), orientation="h",
+        marker_color="#d62728",
+        text=[f"{v:.1f}%" for v in c.values], textposition="auto",
+    ))
+    fig.update_layout(
+        height=max(220, 34 * len(c) + 90),
+        title="변수별 기여도",
+        xaxis_title="기여도 (%)",
+        margin=dict(l=90, r=20, t=40, b=40),
+    )
+    return fig
+
+
 def missing_bar(missing_df: pd.DataFrame) -> go.Figure:
     """변수별 결측 비율 막대그래프."""
     fig = go.Figure(

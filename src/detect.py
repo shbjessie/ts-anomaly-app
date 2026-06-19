@@ -180,3 +180,29 @@ def jaccard(a: pd.Series, b: pd.Series) -> float:
     if union == 0:
         return float("nan")
     return int((a & b).sum()) / union
+
+
+# --------------------------------------------------------------------------- #
+# 6단계: 변수별 기여도 (어느 변수가 이상에 기여했는가)
+# --------------------------------------------------------------------------- #
+def variable_deviation(df: pd.DataFrame, numeric_cols: list[str]) -> pd.DataFrame:
+    """변수별 robust 표준화 편차 크기 |x - median| / IQR (행×변수).
+
+    값이 클수록 그 변수가 평소 분포에서 멀리 벗어났다는 뜻이며,
+    한 시점에서 변수별 편차의 비중이 곧 '변수 기여도'가 된다.
+    IQR이 0인 변수는 표준편차로, 그것도 0이면 1로 대체(0 나눗셈 방지).
+    """
+    X = df[numeric_cols].astype(float)
+    center = X.median()
+    iqr = X.quantile(0.75) - X.quantile(0.25)
+    scale = iqr.where(iqr > 1e-9, X.std(ddof=0))
+    scale = scale.where(scale > 1e-9, 1.0)
+    return (X - center).abs() / scale
+
+
+def contribution_share(dev_row: pd.Series) -> pd.Series:
+    """한 시점의 변수별 편차 -> 기여도(%) (합 100). 모두 0이면 균등 분배."""
+    total = float(dev_row.sum())
+    if total <= 1e-12:
+        return pd.Series(100.0 / len(dev_row), index=dev_row.index)
+    return dev_row / total * 100.0
