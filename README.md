@@ -40,7 +40,7 @@ streamlit run app.py
 
 ## 배포 (Streamlit Community Cloud)
 
-의존성은 `requirements.txt`에 버전 고정, Python 버전은 `runtime.txt`(python-3.13).
+의존성은 `requirements.txt`에 버전 고정(로컬 venv와 동일). Python 버전은 배포 시 **Advanced settings 드롭다운에서 3.13 선택**(권장 — 로컬 3.13.7과 일치). `runtime.txt`(python-3.13)는 보조용이며 현재 Cloud에서는 무시될 수 있으므로 드롭다운 선택이 우선이다. Streamlit Cloud는 Python 3.10–3.14를 지원하며 기본값은 3.12.
 
 ### 다음 세션 배포 전 미리 준비할 것
 1. **GitHub 계정** 로그인 가능 상태 (없으면 https://github.com 에서 가입)
@@ -51,5 +51,5 @@ streamlit run app.py
 
 ### 배포 시 메인 파일 / 설정
 - Main file path: `app.py`
-- Python version: 3.13 (`runtime.txt`)
-- darts가 무거우므로 첫 빌드는 수 분 소요될 수 있음. 메인 탐지기를 가벼운 LinearRegression으로 둔 이유.
+- Python version: **Advanced settings에서 3.13 선택** (드롭다운이 우선, `runtime.txt`는 보조)
+- `darts` 코어는 torch·lightgbm·xgboost·catboost·prophet를 끌어오지 않음(전부 extras) → torch 없는 가벼운 구성. 그래도 첫 빌드는 수 분 소요될 수 있음. 메인 탐지기를 가벼운 LinearRegression으로 둔 이유.
