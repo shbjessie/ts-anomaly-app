@@ -192,6 +192,100 @@ def score_overlay(
     return fig
 
 
+def roc_curve_fig(fpr, tpr, auc_val: float) -> go.Figure:
+    """ROC 곡선 (+ 무작위 대각선)."""
+    fig = go.Figure()
+    fig.add_trace(go.Scatter(
+        x=fpr, y=tpr, mode="lines", name=f"ROC (AUC={auc_val:.3f})",
+        line=dict(color="#1f77b4", width=2), fill="tozeroy", fillcolor="rgba(31,119,180,0.1)",
+    ))
+    fig.add_trace(go.Scatter(
+        x=[0, 1], y=[0, 1], mode="lines", name="무작위(0.5)",
+        line=dict(color="gray", dash="dash"),
+    ))
+    fig.update_layout(
+        height=360, title="ROC 곡선",
+        xaxis_title="거짓양성률 (FPR)", yaxis_title="재현율 (TPR)",
+        margin=dict(l=50, r=20, t=40, b=40),
+        legend=dict(x=0.98, y=0.05, xanchor="right", yanchor="bottom"),
+    )
+    return fig
+
+
+def pr_curve_fig(rec, prec, ap: float, baseline: float) -> go.Figure:
+    """Precision-Recall 곡선 (+ 양성비율 기준선)."""
+    fig = go.Figure()
+    fig.add_trace(go.Scatter(
+        x=rec, y=prec, mode="lines", name=f"PR (AP={ap:.3f})",
+        line=dict(color="#d62728", width=2),
+    ))
+    fig.add_hline(
+        y=baseline, line=dict(color="gray", dash="dash"),
+        annotation_text=f"기준선({baseline:.3f})", annotation_position="bottom right",
+    )
+    fig.update_layout(
+        height=360, title="Precision-Recall 곡선",
+        xaxis_title="재현율 (Recall)", yaxis_title="정밀도 (Precision)",
+        margin=dict(l=50, r=20, t=40, b=40),
+        legend=dict(x=0.98, y=0.98, xanchor="right", yanchor="top"),
+    )
+    return fig
+
+
+def confusion_fig(cm) -> go.Figure:
+    """2x2 혼동행렬 히트맵. cm=[[TN,FP],[FN,TP]]."""
+    x_lab = ["예측 정상(0)", "예측 이상(1)"]
+    y_lab = ["실제 정상(0)", "실제 이상(1)"]
+    fig = go.Figure(go.Heatmap(
+        z=cm, x=x_lab, y=y_lab,
+        colorscale="Blues", showscale=False,
+        text=cm, texttemplate="%{text}", textfont=dict(size=18),
+    ))
+    fig.update_layout(
+        height=320, title="혼동행렬",
+        margin=dict(l=60, r=20, t=40, b=40),
+    )
+    fig.update_yaxes(autorange="reversed")
+    return fig
+
+
+def score_distribution(
+    score: pd.Series, threshold: float | None = None, labels: pd.Series | None = None
+) -> go.Figure:
+    """이상 점수 히스토그램 + 임계선. 라벨이 있으면 정상/이상 분포를 겹쳐 표시."""
+    s = score.dropna()
+    fig = go.Figure()
+    if labels is not None:
+        lab = labels.reindex(s.index)
+        normal = s[lab == 0]
+        anom = s[lab == 1]
+        fig.add_trace(go.Histogram(
+            x=normal, name="실제 정상(0)", opacity=0.65,
+            marker_color="#1f77b4", nbinsx=40,
+        ))
+        fig.add_trace(go.Histogram(
+            x=anom, name="실제 이상(1)", opacity=0.65,
+            marker_color="#d62728", nbinsx=40,
+        ))
+        fig.update_layout(barmode="overlay")
+    else:
+        fig.add_trace(go.Histogram(
+            x=s, name="이상 점수", marker_color="#1f77b4", nbinsx=40,
+        ))
+    if threshold is not None and pd.notna(threshold):
+        fig.add_vline(
+            x=threshold, line=dict(color="red", dash="dash"),
+            annotation_text="임계값", annotation_position="top",
+        )
+    fig.update_layout(
+        height=340, title="이상 점수 분포",
+        xaxis_title="이상 점수 (0~1)", yaxis_title="빈도",
+        margin=dict(l=50, r=20, t=40, b=40),
+        legend=dict(orientation="h", yanchor="bottom", y=1.02, xanchor="left", x=0),
+    )
+    return fig
+
+
 def missing_bar(missing_df: pd.DataFrame) -> go.Figure:
     """변수별 결측 비율 막대그래프."""
     fig = go.Figure(

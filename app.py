@@ -11,7 +11,7 @@ from pathlib import Path
 import pandas as pd
 import streamlit as st
 
-from src import detect, eda, io_utils, viz
+from src import detect, eda, evaluate, io_utils, viz
 
 # --------------------------------------------------------------------------- #
 # 페이지 설정
@@ -31,7 +31,7 @@ SAMPLES = {
 st.title("📈 시계열 이상탐지 대시보드")
 st.caption(
     "다변량 시계열 CSV를 업로드하면 자동으로 분석합니다. "
-    "(로딩·캐싱 · 자동 EDA · 다중 방법 이상탐지 · 방법 비교/앙상블)"
+    "(로딩·캐싱 · 자동 EDA · 다중 방법 이상탐지 · 방법 비교/앙상블 · 라벨 유무별 평가 대시보드)"
 )
 
 
@@ -134,8 +134,8 @@ if bundle.notes:
 # --------------------------------------------------------------------------- #
 # 탭: 데이터 미리보기 / 자동 EDA
 # --------------------------------------------------------------------------- #
-tab_data, tab_eda, tab_detect = st.tabs(
-    ["📋 데이터 & 그래프", "🔍 자동 EDA", "🚨 이상탐지"]
+tab_data, tab_eda, tab_detect, tab_eval = st.tabs(
+    ["📋 데이터 & 그래프", "🔍 자동 EDA", "🚨 이상탐지", "📊 평가 대시보드"]
 )
 
 with tab_data:
@@ -335,3 +335,106 @@ with tab_detect:
         st.plotly_chart(fig, use_container_width=True)
     else:
         st.info("표시할 변수를 한 개 이상 선택하세요.")
+
+# --------------------------------------------------------------------------- #
+# 평가 대시보드 탭 (라벨 유무로 분기 + 대화형 임계값 슬라이더)
+#   detect 탭에서 만든 result / score_names 를 그대로 재사용한다.
+#   (Streamlit은 탭 본문이 모두 같은 실행에서 돌므로 모듈 스코프 변수 공유 가능)
+# --------------------------------------------------------------------------- #
+with tab_eval:
+    st.markdown("##### 📊 탐지 결과 평가")
+
+    # 평가할 연속 점수 선택 (앙상블 평균 또는 개별 방법)
+    eval_options = (["ensemble"] if len(result.used_methods) > 1 else []) + result.used_methods
+    ce1, ce2 = st.columns([1, 1.4])
+    with ce1:
+        eval_key = st.selectbox(
+            "평가할 이상 점수(연속값)",
+            options=eval_options,
+            format_func=lambda k: score_names.get(k, k),
+            key="eval_score",
+            help="ROC/PR·분포는 연속 점수 기준으로 계산됩니다.",
+        )
+    with ce2:
+        eval_q = st.slider(
+            "임계값(분위수) — 슬라이더를 움직이면 지표가 실시간 재계산",
+            0.50, 0.999, 0.95, 0.005, key="eval_q",
+        )
+    eval_score = result.scores[eval_key]
+    eval_thr = detect.threshold_value(eval_score, eval_q)
+
+    if bundle.label_col:
+        # ----------------------- 라벨 있음: 정답 기반 평가 ----------------------- #
+        st.success(f"✅ 라벨 **`{bundle.label_col}`** 기준 정답 평가")
+        y_true = bundle.df[bundle.label_col]
+        met = evaluate.labeled_metrics(y_true, eval_score, eval_q)
+
+        st.caption(
+            f"평가 대상 {met['n']:,}개 시점 중 실제 이상(양성) {met['n_pos']:,}개 "
+            f"({met['n_pos'] / met['n'] * 100:.2f}%) · 점수 NaN 구간 제외"
+        )
+
+        if met["single_class"]:
+            st.warning(
+                "라벨이 한 종류뿐이라(전부 정상 또는 전부 이상) AUC/곡선을 계산할 수 없습니다. "
+                "아래 임계값 기반 지표만 표시합니다."
+            )
+        else:
+            t1, t2, t3 = st.columns(3)
+            t1.metric("ROC-AUC", f"{met['roc_auc']:.3f}")
+            t2.metric("PR-AUC (AP)", f"{met['pr_auc']:.3f}")
+            t3.metric("양성 비율(기준선)", f"{met['baseline']:.3f}")
+
+        st.markdown(f"**현재 임계값(분위수 {eval_q:.3f}, 점수 {met['threshold']:.3f}) 기준**")
+        p1, p2, p3 = st.columns(3)
+        p1.metric("정밀도 (Precision)", f"{met['precision']:.3f}")
+        p2.metric("재현율 (Recall)", f"{met['recall']:.3f}")
+        p3.metric("F1", f"{met['f1']:.3f}")
+
+        if not met["single_class"]:
+            gcol1, gcol2 = st.columns(2)
+            with gcol1:
+                fpr, tpr = met["roc"]
+                st.plotly_chart(viz.roc_curve_fig(fpr, tpr, met["roc_auc"]),
+                                use_container_width=True)
+            with gcol2:
+                rec, prec = met["pr"]
+                st.plotly_chart(viz.pr_curve_fig(rec, prec, met["pr_auc"], met["baseline"]),
+                                use_container_width=True)
+
+        dcol1, dcol2 = st.columns([1, 1.3])
+        with dcol1:
+            st.plotly_chart(viz.confusion_fig(met["cm"]), use_container_width=True)
+        with dcol2:
+            st.plotly_chart(
+                viz.score_distribution(eval_score, eval_thr, labels=y_true),
+                use_container_width=True,
+            )
+        st.caption(
+            "💡 임계값(분위수)을 낮추면 재현율↑·정밀도↓, 높이면 그 반대입니다. "
+            "ROC/PR-AUC는 임계값과 무관한 전체 성능 지표입니다."
+        )
+
+    else:
+        # ----------------------- 라벨 없음: 분포 + 대화형 임계값 ----------------------- #
+        st.info(
+            "ℹ️ 정답 라벨이 없어 정확도 지표 대신 **점수 분포 + 대화형 임계값**으로 "
+            "민감도를 직접 조절·평가합니다."
+        )
+        flags_eval = detect.flags_from_scores(eval_score, eval_q)
+        n_flag = int(flags_eval.sum())
+        valid_n = int(eval_score.notna().sum())
+
+        u1, u2, u3 = st.columns(3)
+        u1.metric("임계값(점수)", f"{eval_thr:.3f}")
+        u2.metric("탐지된 이상 시점", f"{n_flag:,}")
+        u3.metric("탐지 비율", f"{n_flag / valid_n * 100:.2f}%" if valid_n else "—")
+
+        st.plotly_chart(
+            viz.score_distribution(eval_score, eval_thr, labels=None),
+            use_container_width=True,
+        )
+        st.caption(
+            "💡 빨간 선(임계값) 오른쪽이 '이상'으로 판정됩니다. "
+            "슬라이더를 올리면 더 보수적으로(이상 적게), 내리면 더 민감하게 탐지합니다."
+        )
