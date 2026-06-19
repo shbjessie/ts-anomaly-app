@@ -363,6 +363,20 @@ with tab_eval:
     eval_score = result.scores[eval_key]
     eval_thr = detect.threshold_value(eval_score, eval_q)
 
+    # 배포 스테일/모듈 누락 방어: 평가 차트 함수가 모두 로드됐는지 확인.
+    # (Streamlit Cloud가 푸시 후 서브모듈을 재임포트하지 않으면 옛 viz가 남아
+    #  AttributeError가 날 수 있음 → raw 트레이스백 대신 안내 메시지로 대체)
+    _need = ("roc_curve_fig", "pr_curve_fig", "confusion_fig", "score_distribution")
+    _missing = [fn for fn in _need if not hasattr(viz, fn)]
+    if _missing:
+        st.error(
+            "평가 대시보드 모듈이 최신 상태로 로드되지 않았습니다"
+            f" (누락: {', '.join(_missing)}). "
+            "배포 환경이라면 우측 하단 **Manage app → Reboot app** 으로 "
+            "앱을 재시작해 주세요."
+        )
+        st.stop()
+
     if bundle.label_col:
         # ----------------------- 라벨 있음: 정답 기반 평가 ----------------------- #
         st.success(f"✅ 라벨 **`{bundle.label_col}`** 기준 정답 평가")
