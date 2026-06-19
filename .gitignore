@@ -1,0 +1,38 @@
+# Python
+__pycache__/
+*.py[cod]
+*.egg-info/
+.Python
+
+# Virtual environments
+venv/
+.venv/
+env/
+
+# Streamlit
+.streamlit/secrets.toml
+
+# Jupyter
+.ipynb_checkpoints/
+
+# 환경변수 / 비밀
+.env
+.env.*
+
+# 모델 아티팩트 / 대용량 산출물 (샘플 데이터 sample_data/*.csv 는 커밋 대상이라 제외하지 않음)
+*.pkl
+*.joblib
+*.pt
+*.h5
+*.parquet
+build/
+dist/
+
+# OS / editor
+.DS_Store
+Thumbs.db
+.idea/
+.vscode/
+
+# Misc
+*.log
