@@ -8,6 +8,7 @@ from __future__ import annotations
 
 from pathlib import Path
 
+import pandas as pd
 import streamlit as st
 
 from src import detect, eda, io_utils, viz
@@ -30,7 +31,7 @@ SAMPLES = {
 st.title("📈 시계열 이상탐지 대시보드")
 st.caption(
     "다변량 시계열 CSV를 업로드하면 자동으로 분석합니다. "
-    "(현재 2단계: 견고한 로딩 · 해시 캐싱 · 자동 EDA)"
+    "(로딩·캐싱 · 자동 EDA · 다중 방법 이상탐지 · 방법 비교/앙상블)"
 )
 
 
@@ -218,32 +219,105 @@ with tab_detect:
         st.error("탐지에 성공한 방법이 없습니다. 파라미터를 조정해 보세요.")
         st.stop()
 
-    # 어떤 점수로 이상 판정할지 (앙상블 또는 개별 방법)
-    score_options = (["ensemble"] if len(result.used_methods) > 1 else []) + result.used_methods
+    used = result.used_methods
+    multi = len(used) > 1
     score_names = {"ensemble": "앙상블(평균)", **detect.METHODS}
-    sc1, sc2 = st.columns([1, 1.4])
-    with sc1:
-        score_key = st.selectbox(
-            "이상 판정에 사용할 점수",
-            options=score_options,
-            format_func=lambda k: score_names.get(k, k),
+
+    # 공통 임계값(분위수) — 방법 비교와 최종 판정에 함께 적용
+    quantile = st.slider(
+        "임계값(분위수) — 각 점수의 이 분위수 이상을 이상으로 본다",
+        0.80, 0.999, 0.95, 0.005,
+        help="방법 비교·최종 판정에 공통 적용. 5단계에서 라벨/분포 기반 인터랙티브 평가로 확장됩니다.",
+    )
+
+    x_axis = bundle.df[bundle.time_col] if bundle.time_col else None
+    per_flags = detect.per_method_flags(result.scores, used, quantile)
+
+    # ----- 방법 비교 (방법이 2개 이상일 때) -----
+    if multi:
+        st.markdown("##### 🔬 방법 비교")
+        st.caption(
+            "방법별 이상 점수를 겹쳐 보고(아래), 같은 임계값에서 각 방법이 몇 개를 "
+            "잡는지·서로 얼마나 일치하는지 비교합니다."
         )
-    with sc2:
-        quantile = st.slider(
-            "임계값(분위수) — 이 분위수 이상을 이상으로 표시",
-            0.80, 0.999, 0.95, 0.005,
-            help="5단계에서 라벨/분포 기반 인터랙티브 평가로 확장됩니다.",
+        st.plotly_chart(
+            viz.score_overlay(result.scores, used, score_names, x=x_axis),
+            use_container_width=True,
         )
 
-    score = result.scores[score_key]
-    flags = detect.flags_from_scores(score, quantile)
-    thr = detect.threshold_value(score, quantile)
+        comp_rows = []
+        for m in used:
+            nf = int(per_flags[m].sum())
+            comp_rows.append({
+                "방법": detect.METHODS.get(m, m),
+                "탐지 수": nf,
+                "탐지 비율(%)": round(nf / len(per_flags[m]) * 100, 2),
+            })
+        union_f = detect.combine_flags(per_flags, "union")
+        inter_f = detect.combine_flags(per_flags, "intersection")
+        for label, f in [("합집합(OR)", union_f), ("교집합(AND)", inter_f)]:
+            comp_rows.append({
+                "방법": label,
+                "탐지 수": int(f.sum()),
+                "탐지 비율(%)": round(int(f.sum()) / len(f) * 100, 2),
+            })
+
+        ccomp, cagree = st.columns([1.3, 1])
+        with ccomp:
+            st.dataframe(
+                pd.DataFrame(comp_rows).set_index("방법"),
+                use_container_width=True,
+            )
+        with cagree:
+            if len(used) == 2:
+                a, b = per_flags[used[0]], per_flags[used[1]]
+                inter_n = int((a & b).sum())
+                union_n = int((a | b).sum())
+                st.metric("두 방법 모두 탐지 (교집합)", f"{inter_n:,}")
+                st.metric("어느 한쪽만 탐지", f"{union_n - inter_n:,}")
+                st.metric("일치도 (Jaccard)", f"{detect.jaccard(a, b):.3f}")
+            st.caption("Jaccard = 교집합 / 합집합. 1에 가까울수록 두 방법이 같은 지점을 잡습니다.")
+
+    # ----- 최종 판정 & 결과 -----
+    st.markdown("##### 🚩 이상 판정")
+    mode_options = (["mean", "union", "intersection"] if multi else []) + used
+    mode_names = {
+        "mean": "앙상블 · 평균 점수",
+        "union": "앙상블 · 합집합(OR) — 민감",
+        "intersection": "앙상블 · 교집합(AND) — 보수적",
+        **detect.METHODS,
+    }
+    mode = st.selectbox(
+        "판정 방식",
+        options=mode_options,
+        format_func=lambda k: mode_names.get(k, k),
+        help=(
+            "평균=점수 평균에 임계값 적용 · 합집합=한 방법이라도 잡으면 이상 · "
+            "교집합=모든 방법이 잡아야 이상"
+        ),
+    )
+
+    if mode == "mean":
+        score = result.scores["ensemble"]
+        flags = detect.flags_from_scores(score, quantile)
+        thr = detect.threshold_value(score, quantile)
+        score_label = "앙상블(평균) 점수"
+    elif mode in ("union", "intersection"):
+        flags = detect.combine_flags(per_flags, mode)
+        score = result.scores["ensemble"]
+        thr = None  # 방법별 개별 임계라 단일 임계선 없음
+        score_label = "앙상블(평균) 점수 · 참고"
+    else:  # 개별 방법
+        score = result.scores[mode]
+        flags = per_flags[mode]
+        thr = detect.threshold_value(score, quantile)
+        score_label = f"{detect.METHODS.get(mode, mode)} 점수"
 
     n_flag = int(flags.sum())
     m1, m2, m3 = st.columns(3)
     m1.metric("탐지된 이상 시점", f"{n_flag:,}")
     m2.metric("탐지 비율", f"{n_flag / len(flags) * 100:.2f}%")
-    m3.metric("임계값(점수)", f"{thr:.3f}")
+    m3.metric("임계값(점수)", f"{thr:.3f}" if thr is not None else "방법별 개별")
 
     st.markdown("##### 탐지 결과")
     overview_vars = st.multiselect(
@@ -256,7 +330,7 @@ with tab_detect:
         fig = viz.anomaly_overview(
             bundle.df, bundle.time_col, overview_vars,
             score=score, flags=flags, threshold=thr,
-            score_label=score_names.get(score_key, score_key),
+            score_label=score_label,
         )
         st.plotly_chart(fig, use_container_width=True)
     else:

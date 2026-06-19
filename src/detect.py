@@ -139,3 +139,44 @@ def flags_from_scores(score: pd.Series, quantile: float) -> pd.Series:
 def threshold_value(score: pd.Series, quantile: float) -> float:
     valid = score.dropna()
     return float(valid.quantile(quantile)) if not valid.empty else float("nan")
+
+
+# --------------------------------------------------------------------------- #
+# 4단계: 방법 비교 + 합집합/교집합 앙상블
+# --------------------------------------------------------------------------- #
+def per_method_flags(
+    scores: pd.DataFrame, methods: list[str], quantile: float
+) -> dict[str, pd.Series]:
+    """방법마다 같은 분위수 임계값을 개별 적용해 이상 여부(bool)를 만든다.
+
+    합집합/교집합 앙상블과 방법 간 일치도 계산의 공통 입력이 된다.
+    """
+    return {m: flags_from_scores(scores[m], quantile) for m in methods if m in scores}
+
+
+def combine_flags(per_flags: dict[str, pd.Series], mode: str) -> pd.Series:
+    """방법별 flags를 결합한다.
+
+    - "union"        : 한 방법이라도 이상으로 보면 이상 (OR) — 민감(재현율↑)
+    - "intersection" : 모든 방법이 이상으로 봐야 이상 (AND) — 보수적(정밀도↑)
+    """
+    series = list(per_flags.values())
+    if not series:
+        return pd.Series(dtype=bool)
+    out = series[0].astype(bool).copy()
+    for s in series[1:]:
+        out = (out | s) if mode == "union" else (out & s)
+    return out
+
+
+def jaccard(a: pd.Series, b: pd.Series) -> float:
+    """두 bool 시리즈의 Jaccard 유사도 = 교집합 / 합집합.
+
+    두 방법이 같은 지점을 얼마나 함께 잡는지(1에 가까울수록 일치).
+    """
+    a = a.fillna(False).astype(bool)
+    b = b.fillna(False).astype(bool)
+    union = int((a | b).sum())
+    if union == 0:
+        return float("nan")
+    return int((a & b).sum()) / union

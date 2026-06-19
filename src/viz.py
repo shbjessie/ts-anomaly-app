@@ -86,7 +86,7 @@ def anomaly_overview(
     columns: list[str],
     score: pd.Series,
     flags: pd.Series,
-    threshold: float,
+    threshold: float | None = None,
     score_label: str = "이상 점수",
 ) -> go.Figure:
     """변수별 시계열(이상 지점 빨강 마커) + 하단 이상 점수 + 임계선.
@@ -134,10 +134,12 @@ def anomaly_overview(
                    name=score_label, showlegend=False),
         row=rows, col=1,
     )
-    fig.add_hline(
-        y=threshold, line=dict(color="red", dash="dash"),
-        row=rows, col=1,
-    )
+    # 단일 임계값이 있을 때만 임계선 표시 (합집합/교집합 판정은 방법별 임계라 생략)
+    if threshold is not None and pd.notna(threshold):
+        fig.add_hline(
+            y=threshold, line=dict(color="red", dash="dash"),
+            row=rows, col=1,
+        )
 
     # 이상 구간 음영 (모든 서브플롯)
     spans = _contiguous_spans(flags)
@@ -152,6 +154,40 @@ def anomaly_overview(
     fig.update_layout(
         height=max(360, 170 * rows),
         margin=dict(l=40, r=20, t=40, b=30),
+    )
+    return fig
+
+
+def score_overlay(
+    scores: pd.DataFrame,
+    methods: list[str],
+    score_names: dict[str, str],
+    x=None,
+) -> go.Figure:
+    """방법별 [0,1] 이상 점수를 한 그래프에 겹쳐 표시한다(+ 앙상블 평균 점선).
+
+    방법마다 점수의 높낮이·민감 구간이 어떻게 다른지 한눈에 비교한다.
+    """
+    if x is None:
+        x = scores.index
+    fig = go.Figure()
+    for m in methods:
+        if m in scores:
+            fig.add_trace(
+                go.Scatter(x=x, y=scores[m], mode="lines",
+                           name=score_names.get(m, m), line=dict(width=1.2))
+            )
+    if "ensemble" in scores and len(methods) > 1:
+        fig.add_trace(
+            go.Scatter(x=x, y=scores["ensemble"], mode="lines",
+                       name=score_names.get("ensemble", "앙상블(평균)"),
+                       line=dict(width=1.8, color="black", dash="dot"))
+        )
+    fig.update_layout(
+        height=320,
+        yaxis_title="이상 점수 (0~1)",
+        margin=dict(l=40, r=20, t=30, b=30),
+        legend=dict(orientation="h", yanchor="bottom", y=1.02, xanchor="left", x=0),
     )
     return fig
 
